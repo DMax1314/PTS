@@ -1,0 +1,207 @@
+import geojson
+from math import radians, cos, sin, asin, sqrt, atan
+import numpy as np
+import math
+import networkx as nx
+import queue
+import copy
+import folium
+
+station_path = "./data/bus_station.geojson"
+line_path = "./data/bus_line.geojson"
+
+def geodistance(lng1,lat1,lng2,lat2):
+    lng1, lat1, lng2, lat2 = map(radians, [float(lng1), float(lat1), float(lng2), float(lat2)])
+    dlon=lng2-lng1
+    dlat=lat2-lat1
+    a=sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    distance=2*asin(sqrt(a))*6371*1000
+    distance=round(distance/1000,3)
+    return distance
+
+# print("123:",geodistance(116.662778, 39.956567,116.68388,39.888733))
+# print("123:",geodistance(116.68388,39.888733,116.662778, 39.956567))
+with open(station_path,'r') as f:
+    gj = geojson.load(f)
+data = gj["features"]
+stations = []
+reverse_stations = []
+for i in range(len(data)):
+    pos = data[i]["geometry"]["coordinates"]
+    stations.append(pos)
+    reverse_stations.append(pos[::-1])
+
+
+with open(line_path, 'r') as f:
+    gj = geojson.load(f)
+data = gj["features"]
+line_new = []
+# 0 21 5
+for i in range(len(data)):
+    # if data[i]["properties"]["NAME"]=="583路(翠福园小区--地铁黄渠站)":
+    if data[i]["properties"]["NAME"]=="372路(怡乐南街公交场站--日新路南口)":
+        line = data[i]["geometry"]["coordinates"][0]
+line_lng = []
+line_lat = []
+for i in range(len(line)):
+    line_lng.append(line[i][0])
+    line_lat.append(line[i][1])
+    line_new.append(line[i][::-1])
+print(max(line_lat))
+print(min(line_lat))
+start_point = line[0]
+end_point = line[-1]
+start_lng = min(start_point[0], end_point[0])
+start_lat = min(start_point[1], end_point[1])
+end_lng = max(end_point[0], start_point[0])
+end_lat = max(end_point[1], start_point[1])
+print(start_lng, start_lat, end_lng, end_lat)
+candidate_stops = []
+for item in stations:
+    if item[0]>start_lng-0.15 and item[0]<end_lng+0.15 and item[1]<end_lat+0.15 and item[1]>start_lat-0.15:
+        candidate_stops.append(item)
+# print(len(candidate_stops))
+
+G = nx.Graph()
+nodes_tmp = list(range(len(candidate_stops)+2))
+nodes = list(map(str, nodes_tmp))
+edges = []
+
+q = queue.Queue()
+q.put(start_point)
+tags = [True]*len(candidate_stops)
+times = 0
+start_dis = 0.25
+end_dis = 0.75
+while not q.empty():
+    ss = q.qsize()
+    for i in range(ss):
+        if times == 0:
+            temp = q.get()
+            for j in range(len(candidate_stops)):
+                # print(temp)
+                # print(candidate_stops[j])
+                # print(geodistance(temp[0], temp[1], candidate_stops[j][0], candidate_stops[j][1]))
+                if geodistance(temp[0], temp[1], candidate_stops[j][0], candidate_stops[j][1])<=end_dis and geodistance(temp[0], temp[1], candidate_stops[j][0], candidate_stops[j][1])>=start_dis:
+                    edges.append((str(0), str(j+1)))
+                    q.put(j)
+                    tags[j] = False
+        else:
+            inx = q.get()
+            for j in range(len(candidate_stops)):
+                if geodistance(candidate_stops[inx][0], candidate_stops[inx][1], candidate_stops[j][0], candidate_stops[j][1]) <= end_dis and geodistance(candidate_stops[inx][0], candidate_stops[inx][1], candidate_stops[j][0], candidate_stops[j][1]) >= start_dis:
+                    edges.append((str(inx + 1), str(j + 1)))
+                    if tags[j]:
+                        q.put(j)
+                        tags[j] = False
+    times+=1
+    # tp = np.array(tags)
+    # print(tp[tp==True].shape)
+
+nums = 0
+for j in range(len(candidate_stops)):
+    # if geodistance(end_point[0], end_point[1], candidate_stops[j][0], candidate_stops[j][1]) <= end_dis and geodistance(end_point[0], end_point[1], candidate_stops[j][0], candidate_stops[j][1])>=start_dis:
+    if geodistance(end_point[0], end_point[1], candidate_stops[j][0], candidate_stops[j][1]) <= 1:
+        edges.append((str(j + 1), str(len(candidate_stops) + 1)))
+        nums+=1
+
+print("nums:", nums)
+G.add_nodes_from(nodes)
+G.add_edges_from(edges)
+print("edges:", len(G.edges))
+# for node in G.nodes:
+#     print(node, ": ", candidate_stops[int(node)-1])
+
+def trans(index):
+    index=int(index)
+    if index==0:
+        return start_point
+    elif index==len(candidate_stops)+1:
+        return end_point
+    return candidate_stops[int(index)-1]
+
+def judge_line(start_node, end_node, G, ends):
+    start_lng, start_lat = start_node
+    end_lng, end_lat = end_node
+    theta = atan(abs(end_lat - start_lat) / abs(end_lng - start_lng))
+    epsi = 1
+    def criter1(line):
+        line = list(map(lambda x: trans(x), line))
+        for i in range(1, len(line)):
+            if geodistance(line[i][0], line[i][1], line[i-1][0], line[i-1][1])>epsi:
+                return False
+        return True
+
+    def criter2(line):
+        line = list(map(lambda x: trans(x), line))
+        line = np.array(line)
+        line_new = line[1:line.shape[0], 0]*math.cos(theta)+line[1:line.shape[0], 1]*math.sin(theta)
+        # print("2:", line_new)
+        return all([line_new[i] < line_new[i+1] for i in range(line_new.shape[0]-1)])
+
+    def criter3(line):
+        line = list(map(lambda x: trans(x), line))
+        dis_diff = list(map(lambda x: geodistance(start_lng, start_lat, x[0], x[1]), line[1:len(line)]))
+        # print("3:", dis_diff)
+        return all([dis_diff[i] < dis_diff[i+1] for i in range(len(dis_diff)-1)])
+
+    def criter4(line):
+        line = list(map(lambda x: trans(x), line))
+        dis_diff = list(map(lambda x: geodistance(end_lng, end_lat, x[0], x[1]), line[1:len(line)]))
+        # print("4:", dis_diff)
+        return all([dis_diff[i] > dis_diff[i+1] for i in range(len(dis_diff)-1)])
+
+    def criter5(line):
+        line = list(map(lambda x: trans(x), line))
+        for i in range(2, len(line)):
+            lng_tmp = line[i][0]
+            lat_tmp = line[i][1]
+            dis_diff = np.array(list(map(lambda x: geodistance(lng_tmp, lat_tmp, x[0], x[1]), line[:i])))
+            if np.argmin(dis_diff)!=dis_diff.shape[0]-1:
+                return False
+        return True
+
+    lines = []
+    def explore(starts, ends, line):
+        if len(lines)>=5:
+            return
+        # print(line)
+        if starts==ends:
+            print("suitable line:", line)
+            print(len(line))
+            # if len(line)<=15:
+            #     return
+            lines.append(copy.deepcopy(line))
+            return
+
+        for node in G.neighbors(starts):
+            if len(line)>=3 and criter3(line) and criter4(line) and criter5(line):
+                line.append(node)
+                explore(node, ends, line)
+                line.pop()
+            elif len(line)<3:
+                line.append(node)
+                explore(node, ends, line)
+                line.pop()
+    node_start_tmp = str(0)
+    node_end_tmp = str(ends)
+    explore(node_start_tmp, node_end_tmp, [node_start_tmp])
+    return lines
+
+lines = judge_line(start_point, end_point, G, len(candidate_stops)+1)
+actual_line = [start_point[::-1]]
+temp_line = lines[-1]
+for i in range(1,len(temp_line)-1):
+    actual_line.append(candidate_stops[int(temp_line[i])-1][::-1])
+actual_line.append(end_point[::-1])
+print(actual_line)
+
+m = folium.Map(line_new[0], zoom_start=14)
+route = folium.PolyLine(line_new, weight=3, color="blue", opacity=0.8).add_to(m)
+route1 = folium.PolyLine(actual_line, weight=3, color="red", opacity=0.8).add_to(m)
+# folium.Marker(line_new[0], popup='<b>Starting Point</b>').add_to(m)
+# for i in range(1,len(actual_line)-1):
+#     folium.Marker(actual_line[i], popup=f'<b>{i} Point</b>').add_to(m)
+# folium.Marker(line_new[-1], popup='<b>Ending Point</b>').add_to(m)
+m.save("line_new.html")
+
